@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-app = FastAPI(title="mirror-os backend")
+app = FastAPI()
 
 @app.get("/health")
 def health():

@@ -161,7 +161,7 @@ export default function RecordScreen() {
           ref={cameraRef}
           style={StyleSheet.absoluteFill}
           device={device}
-          isActive
+          isActive={isFocused}
           video
           audio
           enableZoomGesture
