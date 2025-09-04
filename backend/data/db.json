@@ -1,0 +1,16 @@
+{
+  "sessions": {
+    "3364450191a74fd68bcf8c3c4480e298": {
+      "id": "3364450191a74fd68bcf8c3c4480e298",
+      "upload_id": "13874c4541b54f7e82c82819b2dac1e2",
+      "filename": "dummy_5mb.mp4",
+      "size": 5242880,
+      "mime": "video/mp4",
+      "created_at": "2025-09-04T21:32:42.298337Z",
+      "status": "complete",
+      "tmp_path": "C:\\Users\\sassb\\Desktop\\Mirror OS\\mirror-os\\backend\\data\\tmp\\3364450191a74fd68bcf8c3c4480e298.part",
+      "final_path": "C:\\Users\\sassb\\Desktop\\Mirror OS\\mirror-os\\backend\\data\\sessions\\dummy_5mb.mp4",
+      "bytes_received": 5242880
+    }
+  }
+}
