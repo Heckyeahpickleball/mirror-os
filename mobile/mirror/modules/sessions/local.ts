@@ -1,61 +1,85 @@
-// Simple local session registry backed by a JSON file.
-// Stored under: FileSystem.documentDirectory/recordings/sessions.json
-
+// mobile/mirror/modules/sessions/local.ts
 import * as FileSystem from 'expo-file-system';
 
-export type SessionMeta = {
-  id: string;                           // e.g. 20250903_205516_session
-  videoPath: string;                    // file:// URI
-  createdAt: string;                    // ISO string
-  durationMs: number;                   // ms
-  devicePosition: 'front' | 'back';     // which lens
+export type DevicePosition = 'front' | 'back';
+
+export type Session = {
+  id: string;                 // e.g., 20250903_205516_session
+  videoPath: string;          // file:// URI
+  createdAt: number;          // ms since epoch
+  durationMs?: number;
+  devicePosition?: DevicePosition;
 };
 
-const RECORDINGS_DIR = FileSystem.documentDirectory + 'recordings';
-const SESSIONS_JSON = `${RECORDINGS_DIR}/sessions.json`;
+const ROOT_DIR = FileSystem.documentDirectory + 'recordings';
+const INDEX = `${ROOT_DIR}/sessions.json`;
 
 async function ensureDir() {
-  const info = await FileSystem.getInfoAsync(RECORDINGS_DIR);
+  const info = await FileSystem.getInfoAsync(ROOT_DIR);
   if (!info.exists) {
-    await FileSystem.makeDirectoryAsync(RECORDINGS_DIR, { intermediates: true });
+    await FileSystem.makeDirectoryAsync(ROOT_DIR, { intermediates: true });
+  }
+  const idxInfo = await FileSystem.getInfoAsync(INDEX);
+  if (!idxInfo.exists) {
+    await FileSystem.writeAsStringAsync(INDEX, JSON.stringify([]));
   }
 }
 
-async function readAll(): Promise<SessionMeta[]> {
+function normalizeUri(p: string) {
+  return p.startsWith('file://') ? p : `file://${p}`;
+}
+
+export async function addSession(s: Session): Promise<Session> {
   await ensureDir();
-  const info = await FileSystem.getInfoAsync(SESSIONS_JSON);
-  if (!info.exists) return [];
-  const txt = await FileSystem.readAsStringAsync(SESSIONS_JSON);
+  const raw = await FileSystem.readAsStringAsync(INDEX);
+  const list = (JSON.parse(raw) as Session[]).filter(Boolean);
+  const without = list.filter((x) => x.id !== s.id);
+  without.push({ ...s, videoPath: normalizeUri(s.videoPath) });
+  await FileSystem.writeAsStringAsync(INDEX, JSON.stringify(without));
+  return s;
+}
+
+export async function listSessions(): Promise<Session[]> {
+  await ensureDir();
+
+  let rows: Session[] = [];
   try {
-    const parsed = JSON.parse(txt);
-    return Array.isArray(parsed) ? (parsed as SessionMeta[]) : [];
+    const raw = await FileSystem.readAsStringAsync(INDEX);
+    rows = (JSON.parse(raw) as Session[]).map((r) => ({
+      ...r,
+      videoPath: normalizeUri(r.videoPath),
+    }));
   } catch {
-    return [];
+    rows = [];
   }
+
+  // Backfill stray .mp4 files that aren’t indexed yet
+  try {
+    // @ts-ignore available on native
+    const names: string[] = await FileSystem.readDirectoryAsync(ROOT_DIR);
+    const known = new Set(rows.map((r) => r.id));
+    for (const name of names) {
+      if (!name.endsWith('.mp4')) continue;
+      const id = name.replace(/\.mp4$/, '');
+      if (known.has(id)) continue;
+      const uri = `${ROOT_DIR}/${name}`;
+      const info = await FileSystem.getInfoAsync(uri);
+      const created =
+        (info as any)?.modificationTime
+          ? ((info as any).modificationTime as number) * 1000
+          : Date.now();
+      rows.push({
+        id,
+        videoPath: normalizeUri(uri),
+        createdAt: created,
+      });
+    }
+  } catch {
+    // ignore
+  }
+
+  rows.sort((a, b) => b.createdAt - a.createdAt);
+  return rows;
 }
 
-async function writeAll(list: SessionMeta[]) {
-  await ensureDir();
-  await FileSystem.writeAsStringAsync(SESSIONS_JSON, JSON.stringify(list, null, 2));
-}
-
-export async function listSessions(): Promise<SessionMeta[]> {
-  const list = await readAll();
-  // newest first
-  return list.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
-}
-
-export async function addSession(meta: SessionMeta) {
-  const list = await readAll();
-  // replace if same id exists
-  const idx = list.findIndex((s) => s.id === meta.id);
-  if (idx >= 0) list[idx] = meta;
-  else list.unshift(meta);
-  await writeAll(list);
-}
-
-export async function removeSession(id: string) {
-  const list = await readAll();
-  const next = list.filter((s) => s.id !== id);
-  await writeAll(next);
-}
+export const paths = { ROOT_DIR, INDEX };

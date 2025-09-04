@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -16,89 +16,81 @@ import {
   VideoFile,
 } from 'react-native-vision-camera';
 import * as FileSystem from 'expo-file-system';
-import { addSession } from '../../modules/sessions/local';
+import { addSession, type DevicePosition } from '@/modules/sessions/local';
 
-// timestamp id: YYYYMMDD_HHMMSS
+function pad(n: number) {
+  return String(n).padStart(2, '0');
+}
 function tsId(d = new Date()) {
-  const pad = (n: number) => String(n).padStart(2, '0');
-  const y = d.getFullYear();
-  const m = pad(d.getMonth() + 1);
-  const day = pad(d.getDate());
-  const h = pad(d.getHours());
-  const min = pad(d.getMinutes());
-  const s = pad(d.getSeconds());
-  return `${y}${m}${day}_${h}${min}${s}`;
+  return (
+    d.getFullYear() +
+    pad(d.getMonth() + 1) +
+    pad(d.getDate()) +
+    '_' +
+    pad(d.getHours()) +
+    pad(d.getMinutes()) +
+    pad(d.getSeconds())
+  );
 }
 
 export default function RecordScreen() {
-  // Permissions
-  const { hasPermission: hasCameraPermission, requestPermission: requestCameraPermission } =
-    useCameraPermission();
-  const { hasPermission: hasMicPermission, requestPermission: requestMicPermission } =
-    useMicrophonePermission();
+  const { hasPermission: camOK, requestPermission: reqCam } = useCameraPermission();
+  const { hasPermission: micOK, requestPermission: reqMic } = useMicrophonePermission();
 
-  // Ask once on mount if missing
   useEffect(() => {
     (async () => {
-      if (!hasCameraPermission) await requestCameraPermission();
-      if (!hasMicPermission) await requestMicPermission();
+      if (!camOK) await reqCam();
+      if (!micOK) await reqMic();
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const requestAll = async () => {
-    if (!hasCameraPermission) await requestCameraPermission();
-    if (!hasMicPermission) await requestMicPermission();
-  };
+  const front = useCameraDevice('front');
+  const back = useCameraDevice('back');
 
-  // Prefer back on emulators
-  const [position, setPosition] = useState<'back' | 'front'>('back');
-  const frontDevice = useCameraDevice('front');
-  const backDevice = useCameraDevice('back');
-  const device = position === 'front' ? frontDevice : backDevice;
+  const [position, setPosition] = useState<DevicePosition>(back ? 'back' : 'front');
+  const device = position === 'front' ? front : back;
 
   useEffect(() => {
-    if (!frontDevice && backDevice) setPosition('back');
-    if (!backDevice && frontDevice) setPosition('front');
-  }, [frontDevice, backDevice]);
+    if (!front && back) setPosition('back');
+    if (!back && front) setPosition('front');
+  }, [front, back]);
 
-  const togglePosition = () =>
-    setPosition((p) => (p === 'front' ? 'back' : 'front'));
-
-  // Camera control
-  const cameraRef = useRef<Camera>(null);
   const isFocused = useIsFocused();
+  const cameraRef = useRef<Camera>(null);
 
-  // Recording state
   const [isRecording, setIsRecording] = useState(false);
-  const [lastVideoPath, setLastVideoPath] = useState<string | null>(null);
+  const [lastSaved, setLastSaved] = useState<string | null>(null);
   const startedAtRef = useRef<number | null>(null);
 
-  // persistent target dir
-  const recordingsDir = FileSystem.documentDirectory + 'recordings';
+  const requestAll = async () => {
+    if (!camOK) await reqCam();
+    if (!micOK) await reqMic();
+  };
 
-  const ensureDirAsync = async () => {
-    const info = await FileSystem.getInfoAsync(recordingsDir);
+  async function ensureDir() {
+    const dir = FileSystem.documentDirectory + 'recordings';
+    const info = await FileSystem.getInfoAsync(dir);
     if (!info.exists) {
-      await FileSystem.makeDirectoryAsync(recordingsDir, { intermediates: true });
+      await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
     }
-  };
+    return dir;
+  }
 
-  const persistVideoAsync = async (video: VideoFile) => {
-    await ensureDirAsync();
-    const id = tsId();
-    const fileName = `${id}_session.mp4`;
+  async function persist(video: VideoFile) {
+    const dir = await ensureDir();
+    const name = `${tsId()}_session.mp4`;
     const src = video.path.startsWith('file://') ? video.path : `file://${video.path}`;
-    const dst = `${recordingsDir}/${fileName}`;
+    const dst = `${dir}/${name}`;
     await FileSystem.copyAsync({ from: src, to: dst });
-    return { savedPath: dst, id };
-  };
+    return dst; // file://
+  }
 
   const startRecording = async () => {
     try {
-      if (!cameraRef.current || !device) return;
+      if (!device || !cameraRef.current) return;
       setIsRecording(true);
-      setLastVideoPath(null);
+      setLastSaved(null);
       startedAtRef.current = Date.now();
 
       await cameraRef.current.startRecording({
@@ -106,21 +98,20 @@ export default function RecordScreen() {
         flash: 'off',
         onRecordingFinished: async (video) => {
           try {
-            const createdAt = new Date();
-            const { savedPath, id } = await persistVideoAsync(video);
+            const savedUri = await persist(video);
+            const createdAt = Date.now();
             const durationMs =
-              startedAtRef.current ? Date.now() - startedAtRef.current : 0;
+              startedAtRef.current ? createdAt - startedAtRef.current : undefined;
 
-            // save to local registry
             await addSession({
-              id,
-              videoPath: savedPath,
-              createdAt: createdAt.toISOString(),
+              id: savedUri.split('/').pop()!.replace(/\.mp4$/, ''),
+              videoPath: savedUri,
+              createdAt,
               durationMs,
               devicePosition: position,
             });
 
-            setLastVideoPath(savedPath);
+            setLastSaved(savedUri);
           } catch (e: any) {
             Alert.alert('Save failed', String(e?.message ?? e));
           } finally {
@@ -128,11 +119,10 @@ export default function RecordScreen() {
             startedAtRef.current = null;
           }
         },
-        onRecordingError: (error) => {
+        onRecordingError: (err) => {
           setIsRecording(false);
           startedAtRef.current = null;
-          console.error(error);
-          Alert.alert('Recording error', String(error?.message ?? error));
+          Alert.alert('Recording error', String((err as any)?.message ?? err));
         },
       });
     } catch (e: any) {
@@ -145,19 +135,17 @@ export default function RecordScreen() {
   const stopRecording = async () => {
     try {
       await cameraRef.current?.stopRecording();
-    } catch (e) {
-      console.warn('stopRecording error (ignored):', e);
+    } catch {
+      // ignore
     }
   };
 
-  // Permission-gated UI
-  if (!hasCameraPermission || !hasMicPermission) {
+  if (!camOK || !micOK) {
     return (
       <View style={styles.center}>
         <Text style={styles.title}>Permissions needed</Text>
         <Text style={styles.mono}>
-          Camera: {hasCameraPermission ? 'granted' : 'missing'} · Mic:{' '}
-          {hasMicPermission ? 'granted' : 'missing'}
+          Camera: {camOK ? 'granted' : 'missing'} · Mic: {micOK ? 'granted' : 'missing'}
         </Text>
         <Pressable style={styles.primaryBtn} onPress={requestAll}>
           <Text style={styles.primaryText}>Grant Camera & Mic</Text>
@@ -166,20 +154,18 @@ export default function RecordScreen() {
     );
   }
 
-  if (!frontDevice && !backDevice) {
+  if (!device) {
     return (
       <View style={styles.center}>
         <ActivityIndicator />
-        <Text style={styles.mono}>
-          No camera devices available. Enable a camera in the emulator settings.
-        </Text>
+        <Text style={styles.mono}>Looking for {position} camera…</Text>
       </View>
     );
   }
 
   return (
     <View style={styles.container}>
-      {isFocused && device ? (
+      {isFocused && (
         <Camera
           ref={cameraRef}
           style={StyleSheet.absoluteFill}
@@ -189,34 +175,17 @@ export default function RecordScreen() {
           audio
           enableZoomGesture
         />
-      ) : (
-        <View style={styles.center}>
-          <ActivityIndicator />
-          <Text style={styles.mono}>
-            {device ? 'Preparing camera…' : `No ${position} camera available.`}
-          </Text>
-          {!device && (
-            <Pressable style={styles.secondaryBtn} onPress={togglePosition}>
-              <Text style={styles.secondaryText}>
-                Try {position === 'front' ? 'Back' : 'Front'} camera
-              </Text>
-            </Pressable>
-          )}
-        </View>
       )}
 
       <View style={styles.controls}>
         <Pressable
           style={styles.secondaryBtn}
-          onPress={togglePosition}
-          disabled={!frontDevice || !backDevice}
+          onPress={() =>
+            setPosition((p: DevicePosition) => (p === 'front' ? 'back' : 'front'))
+          }
+          disabled={!front || !back}
         >
-          <Text
-            style={[
-              styles.secondaryText,
-              (!frontDevice || !backDevice) && { opacity: 0.5 },
-            ]}
-          >
+          <Text style={[styles.secondaryText, (!front || !back) && { opacity: 0.5 }]}>
             {position === 'front' ? 'Switch to Back Camera' : 'Switch to Front Camera'}
           </Text>
         </Pressable>
@@ -226,22 +195,15 @@ export default function RecordScreen() {
             <Text style={styles.primaryText}>Stop Recording</Text>
           </Pressable>
         ) : (
-          <Pressable style={styles.primaryBtn} onPress={startRecording} disabled={!device}>
-            <Text style={[styles.primaryText, !device && { opacity: 0.5 }]}>
-              Start Recording
-            </Text>
+          <Pressable style={styles.primaryBtn} onPress={startRecording}>
+            <Text style={styles.primaryText}>Start Recording</Text>
           </Pressable>
         )}
 
-        {lastVideoPath && (
-          <View style={styles.lastRow}>
-            <Text style={styles.mono} numberOfLines={1}>
-              Saved: {lastVideoPath.replace('file://', '')}
-            </Text>
-            <Text style={[styles.mono, { opacity: 0.7 }]}>
-              (Also visible in the “Videos” tab)
-            </Text>
-          </View>
+        {lastSaved && (
+          <Text style={[styles.mono, { marginTop: 6 }]} numberOfLines={1}>
+            Saved: {lastSaved.replace('file://', '')}
+          </Text>
         )}
       </View>
     </View>
@@ -276,6 +238,5 @@ const styles = StyleSheet.create({
   },
   secondaryText: { color: 'white' },
   stopBtn: { backgroundColor: '#b00020' },
-  lastRow: { marginTop: 6, width: '100%' },
   mono: { color: 'white', opacity: 0.85, textAlign: 'center' },
 });
