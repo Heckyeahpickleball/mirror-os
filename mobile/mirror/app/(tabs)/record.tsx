@@ -16,17 +16,26 @@ import {
   VideoFile,
 } from 'react-native-vision-camera';
 import * as FileSystem from 'expo-file-system';
+import { addSession } from '../../modules/sessions/local';
+
+// timestamp id: YYYYMMDD_HHMMSS
+function tsId(d = new Date()) {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const y = d.getFullYear();
+  const m = pad(d.getMonth() + 1);
+  const day = pad(d.getDate());
+  const h = pad(d.getHours());
+  const min = pad(d.getMinutes());
+  const s = pad(d.getSeconds());
+  return `${y}${m}${day}_${h}${min}${s}`;
+}
 
 export default function RecordScreen() {
   // Permissions
-  const {
-    hasPermission: hasCameraPermission,
-    requestPermission: requestCameraPermission,
-  } = useCameraPermission();
-  const {
-    hasPermission: hasMicPermission,
-    requestPermission: requestMicPermission,
-  } = useMicrophonePermission();
+  const { hasPermission: hasCameraPermission, requestPermission: requestCameraPermission } =
+    useCameraPermission();
+  const { hasPermission: hasMicPermission, requestPermission: requestMicPermission } =
+    useMicrophonePermission();
 
   // Ask once on mount if missing
   useEffect(() => {
@@ -42,15 +51,12 @@ export default function RecordScreen() {
     if (!hasMicPermission) await requestMicPermission();
   };
 
-  // Query both lenses and choose whichever is available
+  // Prefer back on emulators
+  const [position, setPosition] = useState<'back' | 'front'>('back');
   const frontDevice = useCameraDevice('front');
   const backDevice = useCameraDevice('back');
-
-  // Start with back (emulators commonly have back but not front)
-  const [position, setPosition] = useState<'back' | 'front'>('back');
   const device = position === 'front' ? frontDevice : backDevice;
 
-  // If current lens doesn't exist, auto-fallback to the other
   useEffect(() => {
     if (!frontDevice && backDevice) setPosition('back');
     if (!backDevice && frontDevice) setPosition('front');
@@ -66,8 +72,9 @@ export default function RecordScreen() {
   // Recording state
   const [isRecording, setIsRecording] = useState(false);
   const [lastVideoPath, setLastVideoPath] = useState<string | null>(null);
+  const startedAtRef = useRef<number | null>(null);
 
-  // Where we keep recordings (persistent)
+  // persistent target dir
   const recordingsDir = FileSystem.documentDirectory + 'recordings';
 
   const ensureDirAsync = async () => {
@@ -79,10 +86,12 @@ export default function RecordScreen() {
 
   const persistVideoAsync = async (video: VideoFile) => {
     await ensureDirAsync();
+    const id = tsId();
+    const fileName = `${id}_session.mp4`;
     const src = video.path.startsWith('file://') ? video.path : `file://${video.path}`;
-    const dst = `${recordingsDir}/${Date.now()}.mp4`;
+    const dst = `${recordingsDir}/${fileName}`;
     await FileSystem.copyAsync({ from: src, to: dst });
-    return dst; // file:// URI
+    return { savedPath: dst, id };
   };
 
   const startRecording = async () => {
@@ -90,28 +99,45 @@ export default function RecordScreen() {
       if (!cameraRef.current || !device) return;
       setIsRecording(true);
       setLastVideoPath(null);
+      startedAtRef.current = Date.now();
 
       await cameraRef.current.startRecording({
         fileType: 'mp4',
         flash: 'off',
         onRecordingFinished: async (video) => {
           try {
-            const saved = await persistVideoAsync(video);
-            setLastVideoPath(saved);
+            const createdAt = new Date();
+            const { savedPath, id } = await persistVideoAsync(video);
+            const durationMs =
+              startedAtRef.current ? Date.now() - startedAtRef.current : 0;
+
+            // save to local registry
+            await addSession({
+              id,
+              videoPath: savedPath,
+              createdAt: createdAt.toISOString(),
+              durationMs,
+              devicePosition: position,
+            });
+
+            setLastVideoPath(savedPath);
           } catch (e: any) {
             Alert.alert('Save failed', String(e?.message ?? e));
           } finally {
             setIsRecording(false);
+            startedAtRef.current = null;
           }
         },
         onRecordingError: (error) => {
           setIsRecording(false);
+          startedAtRef.current = null;
           console.error(error);
           Alert.alert('Recording error', String(error?.message ?? error));
         },
       });
     } catch (e: any) {
       setIsRecording(false);
+      startedAtRef.current = null;
       Alert.alert('Could not start recording', String(e?.message ?? e));
     }
   };
@@ -120,7 +146,6 @@ export default function RecordScreen() {
     try {
       await cameraRef.current?.stopRecording();
     } catch (e) {
-      // VisionCamera can throw if stop is called twice — ignore.
       console.warn('stopRecording error (ignored):', e);
     }
   };
@@ -141,7 +166,6 @@ export default function RecordScreen() {
     );
   }
 
-  // If neither lens exists, guide the user
   if (!frontDevice && !backDevice) {
     return (
       <View style={styles.center}>
@@ -155,13 +179,12 @@ export default function RecordScreen() {
 
   return (
     <View style={styles.container}>
-      {/* Only render the camera when this tab is focused and a device exists */}
       {isFocused && device ? (
         <Camera
           ref={cameraRef}
           style={StyleSheet.absoluteFill}
           device={device}
-          isActive={isFocused}
+          isActive
           video
           audio
           enableZoomGesture
@@ -203,11 +226,7 @@ export default function RecordScreen() {
             <Text style={styles.primaryText}>Stop Recording</Text>
           </Pressable>
         ) : (
-          <Pressable
-            style={styles.primaryBtn}
-            onPress={startRecording}
-            disabled={!device}
-          >
+          <Pressable style={styles.primaryBtn} onPress={startRecording} disabled={!device}>
             <Text style={[styles.primaryText, !device && { opacity: 0.5 }]}>
               Start Recording
             </Text>

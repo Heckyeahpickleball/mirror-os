@@ -1,112 +1,104 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import {
-  View,
-  Text,
-  FlatList,
-  RefreshControl,
-  StyleSheet,
-  Dimensions,
-} from 'react-native';
-import * as FileSystem from 'expo-file-system';
-import { Video, ResizeMode } from 'expo-av';
+import React, { useEffect, useState, useRef } from 'react';
+import { View, Text, StyleSheet, FlatList, Pressable } from 'react-native';
+import { listSessions, SessionMeta } from '../../modules/sessions/local';
+import { Video as ExpoVideo, AVPlaybackStatus, ResizeMode } from 'expo-av';
 
-type Clip = { name: string; uri: string; mtime?: number };
+function msToHMS(ms: number) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = s % 60;
+  if (h) return `${h}:${String(m).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
+  return `${m}:${String(ss).padStart(2, '0')}`;
+}
 
-const DIR = FileSystem.documentDirectory + 'recordings';
+function VideoRow({ meta }: { meta: SessionMeta }) {
+  const ref = useRef<ExpoVideo>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+
+  const onStatus = (status: AVPlaybackStatus) => {
+    if (!status.isLoaded) return;        // type-narrow
+    setIsPlaying(status.isPlaying);
+  };
+
+  const toggle = async () => {
+    const s = await ref.current?.getStatusAsync();
+    if (!s || !s.isLoaded) return;
+    if (s.isPlaying) await ref.current?.pauseAsync();
+    else await ref.current?.playAsync();
+  };
+
+  const created = new Date(meta.createdAt);
+
+  return (
+    <View style={styles.card}>
+      <Text style={styles.name}>{meta.id}.mp4</Text>
+      <ExpoVideo
+        ref={ref}
+        source={{ uri: meta.videoPath }}
+        style={styles.video}
+        resizeMode={ResizeMode.CONTAIN}
+        isLooping={false}
+        onPlaybackStatusUpdate={onStatus}
+        useNativeControls
+      />
+      <View style={styles.row}>
+        <Text style={styles.meta}>
+          {created.toLocaleString()} · {msToHMS(meta.durationMs)} · {meta.devicePosition}
+        </Text>
+        <Pressable style={styles.chip} onPress={toggle}>
+          <Text style={{ fontWeight: '600' }}>{isPlaying ? 'Pause' : 'Play'}</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
 
 export default function VideosScreen() {
-  const [clips, setClips] = useState<Clip[]>([]);
-  const [refreshing, setRefreshing] = useState(false);
-
-  const load = useCallback(async () => {
-    setRefreshing(true);
-    try {
-      const info = await FileSystem.getInfoAsync(DIR);
-      if (!info.exists) {
-        await FileSystem.makeDirectoryAsync(DIR, { intermediates: true });
-      }
-      const names = await FileSystem.readDirectoryAsync(DIR);
-      const withMeta = await Promise.all(
-        names
-          .filter((n) => n.endsWith('.mp4'))
-          .map(async (name) => {
-            const uri = `${DIR}/${name}`;
-            const st = await FileSystem.getInfoAsync(uri);
-            return {
-              name,
-              uri,
-              mtime: (st as any).modificationTime as number | undefined,
-            };
-          })
-      );
-      withMeta.sort((a, b) => (b.mtime ?? 0) - (a.mtime ?? 0));
-      setClips(withMeta);
-    } finally {
-      setRefreshing(false);
-    }
-  }, []);
+  const [items, setItems] = useState<SessionMeta[]>([]);
 
   useEffect(() => {
-    load();
-  }, [load]);
-
-  const width = Dimensions.get('window').width;
-  const videoWidth = width - 24; // card horizontal padding (12 + 12)
-  const videoHeight = Math.round((videoWidth * 9) / 16);
-
-  if (!clips.length && !refreshing) {
-    return (
-      <View style={[styles.screen, { alignItems: 'center', justifyContent: 'center' }]}>
-        <Text style={styles.emptyText}>
-          No recordings yet. Record something in the “Record” tab.
-        </Text>
-      </View>
-    );
-  }
+    (async () => {
+      const list = await listSessions();
+      setItems(list);
+    })();
+  }, []);
 
   return (
     <FlatList
-      style={styles.screen}
-      data={clips}
-      keyExtractor={(item) => item.name}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={load} />}
       contentContainerStyle={{ padding: 12, paddingBottom: 40 }}
-      renderItem={({ item }) => (
-        <View style={styles.card}>
-          <Text style={styles.filename}>{item.name}</Text>
-          <Video
-            style={{ width: videoWidth, height: videoHeight, borderRadius: 12, backgroundColor: '#111' }}
-            source={{ uri: item.uri }}
-            useNativeControls
-            resizeMode={ResizeMode.COVER}
-            shouldPlay={false}
-            isLooping={false}
-          />
+      data={items}
+      keyExtractor={(s) => s.id}
+      renderItem={({ item }) => <VideoRow meta={item} />}
+      ListEmptyComponent={
+        <View style={styles.empty}>
+          <Text style={styles.emptyText}>No recordings yet.</Text>
+          <Text style={styles.emptyText}>Record something from the “Record” tab.</Text>
         </View>
-      )}
+      }
     />
   );
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: '#f4f4f5' },
-  emptyText: { fontSize: 16, color: '#555', textAlign: 'center', paddingHorizontal: 24 },
+  empty: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
+  emptyText: { fontSize: 16, color: '#666', textAlign: 'center' },
   card: {
     backgroundColor: '#fff',
     borderRadius: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#e5e7eb',
     padding: 12,
-    marginBottom: 12,
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOpacity: 0.06,
-    shadowRadius: 6,
-    elevation: 2,
+    marginBottom: 16,
+    elevation: 1,
   },
-  filename: {
-    alignSelf: 'flex-start',
-    marginBottom: 8,
-    color: '#111827',
+  name: { alignSelf: 'flex-start', marginBottom: 6, color: '#373a3c', fontWeight: '600' },
+  video: { width: '100%', aspectRatio: 16 / 9, backgroundColor: '#000' },
+  row: { marginTop: 8, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  meta: { color: '#555' },
+  chip: {
+    backgroundColor: '#eef2ff',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    overflow: 'hidden',
   },
 });

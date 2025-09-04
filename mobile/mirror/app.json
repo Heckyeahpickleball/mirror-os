@@ -1,27 +1,23 @@
 {
   "expo": {
-    "name": "Mirror",
+    "name": "mirror",
     "slug": "mirror",
     "scheme": "mirror",
+    "version": "1.0.0",
+    "orientation": "portrait",
     "plugins": [
-      ["react-native-vision-camera"],
-      ["expo-build-properties", {
-        "ios": { "useFrameworks": "static" }
-      }]
+      "react-native-vision-camera"
     ],
+    "android": {
+      "package": "com.mirroros.app",
+      "permissions": ["CAMERA", "RECORD_AUDIO"]
+    },
     "ios": {
       "bundleIdentifier": "com.mirroros.app",
       "infoPlist": {
-        "NSCameraUsageDescription": "Mirror needs the camera for video journaling.",
-        "NSMicrophoneUsageDescription": "Mirror needs the microphone for audio journaling."
+        "NSCameraUsageDescription": "This app uses the camera to record your journaling sessions.",
+        "NSMicrophoneUsageDescription": "This app uses the microphone to record your voice during journaling."
       }
-    },
-    "android": {
-      "package": "com.mirroros.app",
-      "permissions": [
-        "CAMERA",
-        "RECORD_AUDIO"
-      ]
     }
   }
 }
