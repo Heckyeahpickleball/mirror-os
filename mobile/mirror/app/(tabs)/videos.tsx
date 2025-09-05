@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, FlatList } from 'react-native';
 import { Video, ResizeMode } from 'expo-av';
-import { listSessions, type Session } from '@/modules/sessions/local';
+import { listSessions, type Session } from '../../modules/sessions/local';
 
 function msToClock(ms?: number) {
   if (!ms || ms <= 0) return '—';

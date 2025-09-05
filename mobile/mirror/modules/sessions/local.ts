@@ -1,85 +1,97 @@
-// mobile/mirror/modules/sessions/local.ts
 import * as FileSystem from 'expo-file-system';
 
-export type DevicePosition = 'front' | 'back';
+export type DevicePos = 'front' | 'back';
 
 export type Session = {
-  id: string;                 // e.g., 20250903_205516_session
-  videoPath: string;          // file:// URI
-  createdAt: number;          // ms since epoch
+  id: string;                // e.g. 20250904_172516
+  videoPath: string;         // file://…/recordings/<id>_session.mp4
+  createdAt: number;         // epoch ms
   durationMs?: number;
-  devicePosition?: DevicePosition;
+  devicePosition?: DevicePos;
+  transcriptPath?: string;   // file://…/recordings/<id>.transcript.json
 };
 
-const ROOT_DIR = FileSystem.documentDirectory + 'recordings';
-const INDEX = `${ROOT_DIR}/sessions.json`;
+export const RECORDINGS_DIR = `${FileSystem.documentDirectory}recordings`;
+const INDEX_PATH = `${RECORDINGS_DIR}/index.json`;
 
 async function ensureDir() {
-  const info = await FileSystem.getInfoAsync(ROOT_DIR);
+  const info = await FileSystem.getInfoAsync(RECORDINGS_DIR);
   if (!info.exists) {
-    await FileSystem.makeDirectoryAsync(ROOT_DIR, { intermediates: true });
-  }
-  const idxInfo = await FileSystem.getInfoAsync(INDEX);
-  if (!idxInfo.exists) {
-    await FileSystem.writeAsStringAsync(INDEX, JSON.stringify([]));
+    await FileSystem.makeDirectoryAsync(RECORDINGS_DIR, { intermediates: true });
   }
 }
 
-function normalizeUri(p: string) {
-  return p.startsWith('file://') ? p : `file://${p}`;
+async function fileExists(path: string) {
+  const info = await FileSystem.getInfoAsync(path);
+  return info.exists;
 }
 
-export async function addSession(s: Session): Promise<Session> {
+async function readIndex(): Promise<Session[]> {
   await ensureDir();
-  const raw = await FileSystem.readAsStringAsync(INDEX);
-  const list = (JSON.parse(raw) as Session[]).filter(Boolean);
-  const without = list.filter((x) => x.id !== s.id);
-  without.push({ ...s, videoPath: normalizeUri(s.videoPath) });
-  await FileSystem.writeAsStringAsync(INDEX, JSON.stringify(without));
-  return s;
+  if (!(await fileExists(INDEX_PATH))) {
+    await FileSystem.writeAsStringAsync(INDEX_PATH, '[]');
+    return [];
+  }
+  try {
+    const raw = await FileSystem.readAsStringAsync(INDEX_PATH);
+    const arr = JSON.parse(raw) as Session[];
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
+
+async function writeIndex(list: Session[]) {
+  await ensureDir();
+  await FileSystem.writeAsStringAsync(INDEX_PATH, JSON.stringify(list, null, 2));
+}
+
+/**
+ * Upsert a session by id. On first insert, `videoPath` and `createdAt`
+ * are required; later calls can add/override (e.g., transcriptPath).
+ */
+export async function addSession(
+  update: Partial<Session> & { id: string }
+): Promise<Session> {
+  const list = await readIndex();
+  const i = list.findIndex((s) => s.id === update.id);
+
+  if (i === -1) {
+    if (!update.videoPath) throw new Error('addSession: videoPath required on first insert');
+    if (!update.createdAt) throw new Error('addSession: createdAt required on first insert');
+
+    const created: Session = {
+      id: update.id,
+      videoPath: update.videoPath,
+      createdAt: update.createdAt,
+      durationMs: update.durationMs,
+      devicePosition: update.devicePosition,
+      transcriptPath: update.transcriptPath,
+    };
+    list.push(created);
+    await writeIndex(list);
+    return created;
+  } else {
+    const merged: Session = { ...list[i], ...update };
+    list[i] = merged;
+    await writeIndex(list);
+    return merged;
+  }
 }
 
 export async function listSessions(): Promise<Session[]> {
-  await ensureDir();
+  const list = await readIndex();
 
-  let rows: Session[] = [];
-  try {
-    const raw = await FileSystem.readAsStringAsync(INDEX);
-    rows = (JSON.parse(raw) as Session[]).map((r) => ({
-      ...r,
-      videoPath: normalizeUri(r.videoPath),
-    }));
-  } catch {
-    rows = [];
+  // prune entries whose video file no longer exists
+  const pruned: Session[] = [];
+  for (const s of list) {
+    if (await fileExists(s.videoPath)) pruned.push(s);
+  }
+  if (pruned.length !== list.length) {
+    await writeIndex(pruned);
   }
 
-  // Backfill stray .mp4 files that aren’t indexed yet
-  try {
-    // @ts-ignore available on native
-    const names: string[] = await FileSystem.readDirectoryAsync(ROOT_DIR);
-    const known = new Set(rows.map((r) => r.id));
-    for (const name of names) {
-      if (!name.endsWith('.mp4')) continue;
-      const id = name.replace(/\.mp4$/, '');
-      if (known.has(id)) continue;
-      const uri = `${ROOT_DIR}/${name}`;
-      const info = await FileSystem.getInfoAsync(uri);
-      const created =
-        (info as any)?.modificationTime
-          ? ((info as any).modificationTime as number) * 1000
-          : Date.now();
-      rows.push({
-        id,
-        videoPath: normalizeUri(uri),
-        createdAt: created,
-      });
-    }
-  } catch {
-    // ignore
-  }
-
-  rows.sort((a, b) => b.createdAt - a.createdAt);
-  return rows;
+  // newest first
+  pruned.sort((a, b) => b.createdAt - a.createdAt);
+  return pruned;
 }
-
-export const paths = { ROOT_DIR, INDEX };
